@@ -5,6 +5,9 @@ __pycache__/
 # Per-run pipeline logs (generated at runtime)
 logs/
 
+# Pipeline outputs (keep directory via .gitkeep)
+outputs/*
+!outputs/.gitkeep
+
 # VSCode
 .vscode/
-/data/traning_alphafold_predictor/

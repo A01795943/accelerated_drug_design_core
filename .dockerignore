@@ -1,4 +1,4 @@
-# Ignore when copying repo into container (docker build -f notebooks/Dockerfile .)
+# Ignore when copying repo into container (docker build -f docker/Dockerfile .)
 .git
 .gitignore
 *.pyc
@@ -12,6 +12,3 @@ env
 outputs
 *.pdb
 *.csv
-!alphafold_predictor/models/*.joblib
-!alphafold_predictor/models/*.pth
-!alphafold_predictor/models/*.json

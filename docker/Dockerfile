@@ -54,9 +54,6 @@ RUN pip3 install git+https://github.com/NVIDIA/dllogger#egg=dllogger
 # INSTALAR SE3TRANSFORMER
 RUN cd RFdiffusion/env/SE3Transformer && pip3 install .
 
-# DESCARGAR ANANAS
-RUN wget -qnc https://files.ipd.uw.edu/krypton/ananas && chmod +x ananas
-
 # INSTALAR COLABDESIGN
 RUN pip3 install git+https://github.com/sokrypton/ColabDesign.git@v1.1.1
 RUN ln -s /usr/local/lib/python3.*/dist-packages/colabdesign colabdesign

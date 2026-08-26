@@ -61,10 +61,6 @@ RUN ln -s /usr/local/lib/python3.*/dist-packages/colabdesign colabdesign
 # CREAR DIRECTORIOS
 RUN mkdir -p params RFdiffusion/models
 
-# DESCARGAR MODELOS
-RUN aria2c -q -x 16 https://files.ipd.uw.edu/krypton/schedules.zip && \
-    unzip -q schedules.zip && rm schedules.zip
-
 RUN aria2c -q -x 16 -d RFdiffusion/models http://files.ipd.uw.edu/pub/RFdiffusion/6f5902ac237024bdd0c176cb93063dc4/Base_ckpt.pt
 RUN aria2c -q -x 16 -d RFdiffusion/models http://files.ipd.uw.edu/pub/RFdiffusion/e29311f6f1bf1af907f9ef9f44b8328b/Complex_base_ckpt.pt
 

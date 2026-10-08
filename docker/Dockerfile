@@ -95,8 +95,8 @@ RUN mkdir -p outputs logs
 # Copy repo into container (build from repo root: docker build -f docker/Dockerfile -t drug-accelerator .)
 COPY . /workspace/repo
 
-# REST API for pipeline
-RUN pip3 install "fastapi[standard]" uvicorn
+# REST API for pipeline + host metrics (psutil already installed above; nvidia-ml-py provides pynvml)
+RUN pip3 install "fastapi[standard]" uvicorn psutil nvidia-ml-py
 
 EXPOSE 8000
 WORKDIR /workspace/repo/api

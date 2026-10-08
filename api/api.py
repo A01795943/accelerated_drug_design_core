@@ -47,6 +47,7 @@ from common.logger import (
     resolve_run_id,
     run_env_for_child,
 )
+from system_metrics import collect_system_metrics
 
 SCRIPT_RFDIFFUSION = PIPELINE / "1_run_rfdiffusion.py"
 SCRIPT_MPNN = PIPELINE / "2_run_mpnn_af.py"
@@ -544,6 +545,13 @@ def hello():
     """Simple GET endpoint to test network config. Returns hello world."""
     logger.info("GET /hello")
     return {"message": "hello world"}
+
+
+@app.get("/metrics/system")
+def system_metrics():
+    """Host and in-flight run metrics. Non-blocking; safe to poll."""
+    logger.info("GET /metrics/system")
+    return collect_system_metrics(db_path=get_run_status_db_path(), disk_path=OUTPUTS)
 
 
 @app.get("/logs")

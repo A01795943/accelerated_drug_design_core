@@ -12,11 +12,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_PIPELINE = Path(__file__).resolve().parent
+_REPO_ROOT = _PIPELINE.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+if str(_PIPELINE) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE))
 
 from common.logger import get_logger, resolve_run_id
+from mpnn_seed import diverse_mpnn_seed
 
 # ColabDesign must be on path (caller sets cwd=/workspace and path)
 sys.path.insert(0, "/workspace/colabdesign")
@@ -59,6 +63,7 @@ def main():
     parser.add_argument("--initial_guess", action="store_true", default=False)
     parser.add_argument("--num_designs", type=int, default=1)
     parser.add_argument("--run_id", "--run-id", dest="run_id", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=None, help="Base MPNN sampling seed; omit for historical seeds")
     args = parser.parse_args()
 
     run_id = resolve_run_id(args.run_id)
@@ -161,7 +166,7 @@ def main():
     seqs = []
     scores = []
     for n in range(args.num_seqs):
-        mpnn_model = mk_mpnn_model(seed=n * 12345 + 42)
+        mpnn_model = mk_mpnn_model(seed=diverse_mpnn_seed(args.seed, n))
         mpnn_model.get_af_inputs(af_model)
         out = mpnn_model.sample(num=1, batch=1, temperature=args.mpnn_sampling_temp)
         seqs.append(out["seq"][0])

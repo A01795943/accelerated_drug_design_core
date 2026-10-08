@@ -62,6 +62,7 @@ TASK_INFERENCE = "INFERENCE"
 STATUS_RUNNING = "RUNNING"
 STATUS_COMPLETED = "COMPLETED"
 STATUS_ERROR = "ERROR"
+ORPHAN_ERROR = "orphaned: core restarted"
 
 # Default timeout for long-running steps (seconds)
 STEP_TIMEOUT = 7200
@@ -92,9 +93,13 @@ def init_run_status_db() -> None:
             )
         """)
         conn.commit()
-        for col in ("output_csv", "output_fasta"):
+        for col, col_type in (
+            ("output_csv", "TEXT"),
+            ("output_fasta", "TEXT"),
+            ("worker_pid", "INTEGER"),
+        ):
             try:
-                conn.execute(f"ALTER TABLE run_status ADD COLUMN {col} TEXT")
+                conn.execute(f"ALTER TABLE run_status ADD COLUMN {col} {col_type}")
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
@@ -223,6 +228,68 @@ def run_status_update(
             (status, error_details, output_pdbs, output_csv, output_fasta, now, run_id, task),
         )
         conn.commit()
+
+
+def run_status_set_worker_pid(run_id: str, task: str, pid: int) -> None:
+    """Remember the worker PID so a restart can tell a live run from an orphan."""
+    path = get_run_status_db_path()
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute(
+            "UPDATE run_status SET worker_pid = ?, updated_at = ? WHERE run_id = ? AND task = ?",
+            (pid, now, run_id, task),
+        )
+        conn.commit()
+
+
+def _worker_still_running(pid: Optional[int], run_id: str) -> bool:
+    """True when pid is alive and its command line still belongs to this run_id."""
+    if pid is None or int(pid) <= 0:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        proc = psutil.Process(int(pid))
+        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        cmdline = " ".join(proc.cmdline())
+    except (psutil.Error, OSError):
+        return False
+    return run_id in cmdline
+
+
+def mark_orphaned_runs(db_path: Optional[Path] = None) -> list[str]:
+    """Mark RUNNING rows whose worker process is gone. Returns affected run_ids."""
+    path = db_path if db_path is not None else get_run_status_db_path()
+    if not path.is_file():
+        return []
+    marked: list[str] = []
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(str(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT run_id, task, worker_pid FROM run_status WHERE status = ?",
+                (STATUS_RUNNING,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        for row in rows:
+            if _worker_still_running(row["worker_pid"], row["run_id"]):
+                continue
+            conn.execute(
+                """UPDATE run_status
+                   SET status = ?, error_details = ?, updated_at = ?
+                   WHERE run_id = ? AND task = ? AND status = ?""",
+                (STATUS_ERROR, ORPHAN_ERROR, now, row["run_id"], row["task"], STATUS_RUNNING),
+            )
+            marked.append(row["run_id"])
+        conn.commit()
+    if marked:
+        logger.info("Marked orphaned runs ERROR: %s", marked)
+    return marked
 
 
 def run_status_get(run_id: str, task: str) -> Optional[dict]:
@@ -482,6 +549,7 @@ class MPNNParams(BaseModel):
     rm_aa: str = "C"
     mpnn_sampling_temp: float = 0.1
     num_designs: int = 1
+    seed: Optional[int] = Field(default=None, description="Base MPNN sampling seed; omit to keep current randomness")
 
 
 class InferenceParams(BaseModel):
@@ -577,6 +645,7 @@ def get_run_log(
 @app.on_event("startup")
 def startup():
     init_run_status_db()
+    mark_orphaned_runs()
 
 
 @app.post("/run/rfdiffusion")
@@ -627,12 +696,13 @@ def run_rfdiffusion(params: RFdiffusionParams):
     cmd = ["python3", str(SCRIPT_RFDIFFUSION)] + args
     run_log.info("Launching subprocess: %s", " ".join(cmd))
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(WORKSPACE),
             env=run_env_for_child(run_id),
         )
-        run_log.info("Subprocess started (async); child inherits RUN_ID=%s LOG_DIR=%s", run_id, LOGS)
+        run_status_set_worker_pid(run_id, TASK_RD_DIFFUSION, proc.pid)
+        run_log.info("Subprocess started (async) pid=%s; child inherits RUN_ID=%s LOG_DIR=%s", proc.pid, run_id, LOGS)
     except Exception:
         run_log.exception("Failed to launch subprocess")
         run_status_update(run_id, TASK_RD_DIFFUSION, STATUS_ERROR, error_details="Failed to launch worker")
@@ -701,6 +771,8 @@ def run_mpnn(params: MPNNParams):
         "--num_designs", str(params.num_designs),
         "--mpnn_sampling_temp", str(params.mpnn_sampling_temp),
     ]
+    if params.seed is not None:
+        args.extend(["--seed", str(params.seed)])
     if input_pdb_arg:
         args.extend(["--input_pdb", input_pdb_arg])
     if params.use_alphafold:
@@ -725,8 +797,9 @@ def run_mpnn(params: MPNNParams):
         cmd = ["python3", str(SCRIPT_MPNN)] + args
         run_log.info("Launching subprocess (async): %s", " ".join(cmd))
         try:
-            subprocess.Popen(cmd, cwd=str(WORKSPACE), env=run_env_for_child(run_id))
-            run_log.info("Subprocess started; child inherits RUN_ID=%s", run_id)
+            proc = subprocess.Popen(cmd, cwd=str(WORKSPACE), env=run_env_for_child(run_id))
+            run_status_set_worker_pid(run_id, TASK_MPNN_RF_DIFFUSION, proc.pid)
+            run_log.info("Subprocess started pid=%s; child inherits RUN_ID=%s", proc.pid, run_id)
         except Exception:
             run_log.exception("Failed to launch MPNN subprocess")
             run_status_update(run_id, TASK_MPNN_RF_DIFFUSION, STATUS_ERROR, error_details="Failed to launch worker")

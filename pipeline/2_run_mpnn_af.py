@@ -126,6 +126,7 @@ def save_mpnn_results_to_db(
         "num_designs": getattr(args, "num_designs", None),
         "design_num": getattr(args, "design_num", None),
         "input_pdb": getattr(args, "input_pdb", None),
+        "seed": getattr(args, "seed", None),
     }
     with sqlite3.connect(run_status_db) as conn:
         _ensure_mpnn_tables(conn)
@@ -205,6 +206,7 @@ def run_proteinmpnn_alphafold(
     mpnn_sampling_temp: float = 0.1,
     num_designs: int = 1,
     design_num: int = 0,
+    seed: int | None = None,
     run_id: str | None = None,
     logger=None,
 ) -> bool:
@@ -238,6 +240,8 @@ def run_proteinmpnn_alphafold(
         opts.append("--use_multimer")
     if run_id:
         opts.append(f"--run_id={run_id}")
+    if seed is not None:
+        opts.append(f"--seed={int(seed)}")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     mpnn_diverse_af_script = os.path.join(script_dir, "mpnn_diverse_af.py")
@@ -278,6 +282,7 @@ def run_proteinmpnn_only(
     mpnn_sampling_temp: float = 0.1,
     num_designs: int = 1,
     design_num: int = 0,
+    seed: int | None = None,
     run_id: str | None = None,
     logger=None,
 ) -> bool:
@@ -333,6 +338,7 @@ use_multimer = {use_multimer}
 rm_aa = "{rm_aa}"
 sampling_temp = {sampling_temp}
 num_designs = {num_designs}
+mpnn_seed = {mpnn_seed}
 
 if rm_aa == "":
     rm_aa = None
@@ -401,7 +407,10 @@ if num_seqs < batch_size:
     batch_size = num_seqs
 
 print("Running ProteinMPNN only...")
-mpnn_model = mk_mpnn_model()
+if mpnn_seed is None:
+    mpnn_model = mk_mpnn_model()
+else:
+    mpnn_model = mk_mpnn_model(seed=int(mpnn_seed))
 os.makedirs(output_dir, exist_ok=True)
 data = []
 
@@ -434,6 +443,7 @@ print(f"MPNN only completed. Results saved to {output_dir}")
         rm_aa=rm_aa,
         sampling_temp=mpnn_sampling_temp,
         num_designs=num_designs,
+        mpnn_seed="None" if seed is None else str(int(seed)),
     )
 
     temp_script_path = "/tmp/mpnn_only.py"
@@ -606,6 +616,7 @@ def main():
     parser.add_argument("--rm_aa", type=str, default="C")
     parser.add_argument("--mpnn_sampling_temp", type=float, default=0.1)
     parser.add_argument("--num_designs", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=None, help="Base MPNN sampling seed; omit to keep current randomness")
     args = parser.parse_args()
 
     run_id = resolve_run_id(args.run_id)
@@ -629,6 +640,7 @@ def main():
         mpnn_sampling_temp=args.mpnn_sampling_temp,
         num_designs=args.num_designs,
         design_num=args.design_num,
+        seed=args.seed,
         run_id=run_id,
         logger=run_logger,
     )

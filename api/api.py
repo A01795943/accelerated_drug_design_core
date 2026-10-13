@@ -554,6 +554,10 @@ class MPNNParams(BaseModel):
         default=None,
         description="Binder sequences already stored for this backbone; skipped before AlphaFold",
     )
+    max_attempts: Optional[int] = Field(
+        default=None,
+        description="Stop sampling after this many attempts; the core uses num_seqs*20 when omitted",
+    )
 
 
 class InferenceParams(BaseModel):
@@ -785,6 +789,8 @@ def run_mpnn(params: MPNNParams):
         )
         args.extend(["--exclude_seqs_file", str(exclude_path)])
         run_log.info("Excluding %d binder sequences before AlphaFold", len(params.exclude_binder_seqs))
+    if params.max_attempts is not None:
+        args.extend(["--max_attempts", str(params.max_attempts)])
     if input_pdb_arg:
         args.extend(["--input_pdb", input_pdb_arg])
     if params.use_alphafold:
@@ -1092,6 +1098,17 @@ def run_inference(params: InferenceParams):
     return {"status": "accepted", "run_id": run_id, "log_file": str(get_log_path(run_id))}
 
 
+def _read_mpnn_progress(run_id: str):
+    """Child writes outputs/{run_name}/progress.json. Minibatch jobs set run_name = run_id."""
+    path = OUTPUTS / run_id / "progress.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 @app.get("/run/mpnn/status/{run_id}")
 def mpnn_status(run_id: str):
     """Get MPNN+RF_DIFFUSION run status by run_id. When COMPLETED, returns summary (params, fasta, best PDB) and pagination info (total_records, total_batches, batch_size). Use GET /run/mpnn/status/{run_id}/detail?batch=N to fetch detail batches. When RUNNING or ERROR, returns status row only."""
@@ -1100,7 +1117,12 @@ def mpnn_status(run_id: str):
     if row is None:
         raise HTTPException(status_code=404, detail=f"No run found for run_id '{run_id}'")
     if row.get("status") != STATUS_COMPLETED:
-        return {**row, "log_file": str(get_log_path(run_id))}
+        body = {**row, "log_file": str(get_log_path(run_id))}
+        if row.get("status") == STATUS_RUNNING:
+            progress = _read_mpnn_progress(run_id)
+            if progress is not None:
+                body["progress"] = progress
+        return body
     summary = mpnn_summary_get(run_id)
     total_records = mpnn_detail_count(run_id)
     total_batches = (total_records + BATCH_SIZE_MPNN - 1) // BATCH_SIZE_MPNN if total_records else 0

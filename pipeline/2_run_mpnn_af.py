@@ -23,13 +23,14 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from common.logger import get_logger, log_subprocess_result, resolve_run_id, run_env_for_child
+from common.logger import get_logger, log_subprocess_result, resolve_run_id, run_env_for_child, stream_subprocess
 
 sys.path.append("/workspace/RFdiffusion")
 sys.path.append("/workspace/colabdesign")
 
 from colabdesign.af import mk_af_model
 from mpnn_diverse_af import get_info
+from mpnn_unique import merge_run_stats
 
 OUTPUTS_DIR = "/workspace/outputs"
 PROCESS_NAME = "2_run_mpnn_af.py"
@@ -128,6 +129,7 @@ def save_mpnn_results_to_db(
         "input_pdb": getattr(args, "input_pdb", None),
         "seed": getattr(args, "seed", None),
     }
+    merge_run_stats(param_details, output_dir)
     with sqlite3.connect(run_status_db) as conn:
         _ensure_mpnn_tables(conn)
         conn.execute(
@@ -208,6 +210,7 @@ def run_proteinmpnn_alphafold(
     design_num: int = 0,
     seed: int | None = None,
     exclude_seqs_file: str | None = None,
+    max_attempts: int | None = None,
     run_id: str | None = None,
     logger=None,
 ) -> bool:
@@ -245,6 +248,8 @@ def run_proteinmpnn_alphafold(
         opts.append(f"--seed={int(seed)}")
     if exclude_seqs_file:
         opts.append(f"--exclude_seqs_file={exclude_seqs_file}")
+    if max_attempts is not None:
+        opts.append(f"--max_attempts={int(max_attempts)}")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     mpnn_diverse_af_script = os.path.join(script_dir, "mpnn_diverse_af.py")
@@ -256,11 +261,11 @@ def run_proteinmpnn_alphafold(
 
     try:
         t0 = time.time()
-        result = subprocess.run(
+        os.makedirs(output_dir, exist_ok=True)
+        result = stream_subprocess(
             cmd,
+            os.path.join(output_dir, "child.log"),
             cwd="/workspace",
-            capture_output=True,
-            text=True,
             env=run_env_for_child(run_id) if run_id else None,
         )
         if logger:
@@ -621,6 +626,7 @@ def main():
     parser.add_argument("--num_designs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None, help="Base MPNN sampling seed; omit to keep current randomness")
     parser.add_argument("--exclude_seqs_file", type=str, default=None, help="Binder sequences to skip before AlphaFold")
+    parser.add_argument("--max_attempts", type=int, default=None, help="Cap on ProteinMPNN samples; default is num_seqs*20")
     args = parser.parse_args()
 
     run_id = resolve_run_id(args.run_id)
@@ -646,6 +652,7 @@ def main():
         design_num=args.design_num,
         seed=args.seed,
         exclude_seqs_file=args.exclude_seqs_file,
+        max_attempts=args.max_attempts,
         run_id=run_id,
         logger=run_logger,
     )
@@ -654,6 +661,7 @@ def main():
             success = run_proteinmpnn_alphafold(**common_kwargs)
         else:
             common_kwargs.pop("exclude_seqs_file", None)
+            common_kwargs.pop("max_attempts", None)
             success = run_proteinmpnn_only(**common_kwargs)
     except Exception:
         run_logger.exception("%s failed with exception", PROCESS_NAME)

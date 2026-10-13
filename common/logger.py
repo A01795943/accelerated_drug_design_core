@@ -136,6 +136,37 @@ def run_env_for_child(run_id: str) -> dict[str, str]:
     return env
 
 
+def stream_subprocess(cmd, log_path, *, cwd=None, env=None, tail_lines: int = 40):
+    """Run a child and append its output to ``log_path`` as it arrives.
+
+    The returned ``CompletedProcess.stdout`` is only the last ``tail_lines``
+    lines, which is what error logs need. The full text stays in the file.
+    """
+    from collections import deque
+
+    os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+    tail: deque[str] = deque(maxlen=tail_lines)
+    with open(log_path, "w", encoding="utf-8") as handle:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        if proc.stdout is None:
+            code = proc.wait()
+            return subprocess.CompletedProcess(cmd, code, stdout="", stderr="")
+        for line in proc.stdout:
+            handle.write(line)
+            handle.flush()
+            tail.append(line)
+        code = proc.wait()
+    return subprocess.CompletedProcess(cmd, code, stdout="".join(tail), stderr="")
+
+
 def log_subprocess_result(
     logger: logging.LoggerAdapter,
     result: subprocess.CompletedProcess,

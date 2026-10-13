@@ -28,11 +28,19 @@ def test_binder_key_is_the_tail_after_the_last_slash():
     assert binder_key(binder_a.lower()) == binder_a
     short = "C" * 10
     folded = binder_key_for_length(f"{target}/{short}", 14)
-    flat = (target + short)
+    flat = target + short
     assert folded == flat[-14:]
     assert binder_key_for_length(f"{target}/{binder_a}", 14) == binder_a
-    assert diverse_mpnn_seed(None, 0) == 42
-    assert diverse_mpnn_seed(None, 2) == 2 * 12345 + 42
+    assert binder_key(None) == ""
+
+
+def test_diverse_seed_is_31_bits_and_deterministic():
+    seeds = [diverse_mpnn_seed(527, attempt) for attempt in range(100_000)]
+    assert min(seeds) >= 1
+    assert max(seeds) <= 2**31 - 1
+    assert diverse_mpnn_seed(None, 0) == diverse_mpnn_seed(42, 0)
+    assert diverse_mpnn_seed(527, 3) == diverse_mpnn_seed(527, 3)
+    assert diverse_mpnn_seed(527, 0) != diverse_mpnn_seed(527, 1)
 
 
 def test_diverse_seed_shifts_with_base_so_minibatches_do_not_overlap():

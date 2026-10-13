@@ -4,13 +4,22 @@ Stored sequences are TARGET/BINDER. The binder is the tail after the last
 '/'. ``binder_key_for_length`` is the same key, except when that tail is not
 the length AlphaFold folds: then it uses the tail of the slash-stripped
 sequence, which is what ``seq.replace('/', '')[-af_len:]`` predicts.
+
+``diverse_mpnn_seed`` mixes ``base:attempt`` with blake2b into a 31-bit
+integer in ``1 .. 2**31-1``. ``base is None`` uses 42.
 """
 from __future__ import annotations
 
-def diverse_mpnn_seed(base_seed: int | None, index: int) -> int:
-    if base_seed is None:
-        return index * 12345 + 42
-    return int(base_seed) + int(index)
+import hashlib
+
+_SEED_MASK = 0x7FFFFFFF
+
+
+def diverse_mpnn_seed(base_seed: int | None, attempt: int) -> int:
+    base = 42 if base_seed is None else int(base_seed)
+    digest = hashlib.blake2b(f"{base}:{int(attempt)}".encode(), digest_size=4).digest()
+    value = int.from_bytes(digest, "big") & _SEED_MASK
+    return value or 1
 
 
 def _normalize(seq: str) -> str:

@@ -207,6 +207,7 @@ def run_proteinmpnn_alphafold(
     num_designs: int = 1,
     design_num: int = 0,
     seed: int | None = None,
+    exclude_seqs_file: str | None = None,
     run_id: str | None = None,
     logger=None,
 ) -> bool:
@@ -242,6 +243,8 @@ def run_proteinmpnn_alphafold(
         opts.append(f"--run_id={run_id}")
     if seed is not None:
         opts.append(f"--seed={int(seed)}")
+    if exclude_seqs_file:
+        opts.append(f"--exclude_seqs_file={exclude_seqs_file}")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     mpnn_diverse_af_script = os.path.join(script_dir, "mpnn_diverse_af.py")
@@ -617,6 +620,7 @@ def main():
     parser.add_argument("--mpnn_sampling_temp", type=float, default=0.1)
     parser.add_argument("--num_designs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=None, help="Base MPNN sampling seed; omit to keep current randomness")
+    parser.add_argument("--exclude_seqs_file", type=str, default=None, help="Binder sequences to skip before AlphaFold")
     args = parser.parse_args()
 
     run_id = resolve_run_id(args.run_id)
@@ -641,6 +645,7 @@ def main():
         num_designs=args.num_designs,
         design_num=args.design_num,
         seed=args.seed,
+        exclude_seqs_file=args.exclude_seqs_file,
         run_id=run_id,
         logger=run_logger,
     )
@@ -648,6 +653,7 @@ def main():
         if args.use_alphafold:
             success = run_proteinmpnn_alphafold(**common_kwargs)
         else:
+            common_kwargs.pop("exclude_seqs_file", None)
             success = run_proteinmpnn_only(**common_kwargs)
     except Exception:
         run_logger.exception("%s failed with exception", PROCESS_NAME)

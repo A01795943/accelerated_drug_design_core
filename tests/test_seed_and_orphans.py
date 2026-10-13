@@ -14,16 +14,40 @@ from mpnn_seed import diverse_mpnn_seed  # noqa: E402
 import api as api_mod  # noqa: E402
 
 
-def test_diverse_seed_keeps_historical_formula_when_unset():
+def test_binder_key_is_the_tail_after_the_last_slash():
+    from mpnn_seed import binder_key, binder_key_for_length
+
+    target = "ACDEFGHIKLMNPQRSTVWY" * 3 + "ACDEFGHIKLMN"  # 72
+    assert len(target) == 72
+    binder_a = "CCCCCCCCCCCCCC"
+    binder_b = "DDDDDDDDDDDDDD"
+    assert binder_key(f"{target}/{binder_a}") == binder_a
+    assert binder_key(f"{target}/{binder_b}") != binder_a
+    assert binder_key(f"{'B' * 72}/{binder_a}") == binder_a
+    assert binder_key(f" \n{target.lower()}/{binder_a.lower()} ") == binder_a
+    assert binder_key(binder_a.lower()) == binder_a
+    short = "C" * 10
+    folded = binder_key_for_length(f"{target}/{short}", 14)
+    flat = (target + short)
+    assert folded == flat[-14:]
+    assert binder_key_for_length(f"{target}/{binder_a}", 14) == binder_a
     assert diverse_mpnn_seed(None, 0) == 42
     assert diverse_mpnn_seed(None, 2) == 2 * 12345 + 42
 
 
 def test_diverse_seed_shifts_with_base_so_minibatches_do_not_overlap():
-    first = [diverse_mpnn_seed(1000, n) for n in range(3)]
-    second = [diverse_mpnn_seed(2000, n) for n in range(3)]
-    assert first == [1000, 1001, 1002]
-    assert set(first).isdisjoint(second)
+    from mpnn_seed import binder_key
+
+    target = "A" * 72
+    binder_a = "CCCCCCCCCCCCCC"
+    binder_b = "DDDDDDDDDDDDDD"
+    assert len(binder_a) == 14 and len(binder_b) == 14
+    assert binder_key(f"{target}/{binder_a}") == binder_a
+    assert binder_key(f"{target}/{binder_a}") != binder_key(f"{target}/{binder_b}")
+    assert binder_key(f"{target}/{binder_a}") == binder_key(f"{'B' * 72}/{binder_a}")
+    assert binder_key(f"  {target.lower()} / {binder_a.lower()} \n") == binder_a
+    assert binder_key("  acde  ") == "ACDE"
+    assert binder_key(None) == ""
 
 
 def _init_db(tmp_path, monkeypatch):

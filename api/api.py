@@ -550,6 +550,10 @@ class MPNNParams(BaseModel):
     mpnn_sampling_temp: float = 0.1
     num_designs: int = 1
     seed: Optional[int] = Field(default=None, description="Base MPNN sampling seed; omit to keep current randomness")
+    exclude_binder_seqs: Optional[list[str]] = Field(
+        default=None,
+        description="Binder sequences already stored for this backbone; skipped before AlphaFold",
+    )
 
 
 class InferenceParams(BaseModel):
@@ -773,6 +777,14 @@ def run_mpnn(params: MPNNParams):
     ]
     if params.seed is not None:
         args.extend(["--seed", str(params.seed)])
+    if params.exclude_binder_seqs:
+        exclude_path = OUTPUTS / f"{run_id}_exclude_seqs.txt"
+        exclude_path.write_text(
+            "\n".join(seq.strip() for seq in params.exclude_binder_seqs if seq and seq.strip()) + "\n",
+            encoding="utf-8",
+        )
+        args.extend(["--exclude_seqs_file", str(exclude_path)])
+        run_log.info("Excluding %d binder sequences before AlphaFold", len(params.exclude_binder_seqs))
     if input_pdb_arg:
         args.extend(["--input_pdb", input_pdb_arg])
     if params.use_alphafold:

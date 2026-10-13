@@ -20,7 +20,7 @@ if str(_PIPELINE) not in sys.path:
     sys.path.insert(0, str(_PIPELINE))
 
 from common.logger import get_logger, resolve_run_id
-from mpnn_seed import diverse_mpnn_seed
+from mpnn_seed import binder_key_for_length, diverse_mpnn_seed, load_binder_keys
 
 # ColabDesign must be on path (caller sets cwd=/workspace and path)
 sys.path.insert(0, "/workspace/colabdesign")
@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--num_designs", type=int, default=1)
     parser.add_argument("--run_id", "--run-id", dest="run_id", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None, help="Base MPNN sampling seed; omit for historical seeds")
+    parser.add_argument("--exclude_seqs_file", type=str, default=None, help="Binder sequences already stored for this backbone")
     args = parser.parse_args()
 
     run_id = resolve_run_id(args.run_id)
@@ -158,8 +159,10 @@ def main():
         af_model.opt["fix_pos"] = p[p < af_model._len]
 
     data = []
-    best = {"rmsd": np.inf, "n": 0}
+    best = {"rmsd": np.inf, "n": None}
     available_terms = None
+    known = load_binder_keys(args.exclude_seqs_file)
+    seen = set(known)
 
     # Step 1: generate N different sequences (one MPNN model per seed so we get distinct sequences)
     print("running proteinMPNN (one model per seed for diversity)...")
@@ -172,11 +175,19 @@ def main():
         seqs.append(out["seq"][0])
         scores.append(float(np.asarray(out["score"])[0]))
 
-    # Step 2: run AlphaFold on each sequence
+    # Step 2: run AlphaFold on sequences that are not already stored for this backbone
     print("running AlphaFold...")
+    skipped = 0
     with open(f"{args.loc}/design.fasta", "w") as fasta:
         for n in range(args.num_seqs):
             seq = seqs[n] if hasattr(seqs[n], "strip") else str(seqs[n])
+            key = binder_key_for_length(seq, getattr(af_model, "_len", None))
+            if key and key in seen:
+                skipped += 1
+                print(f"skipping duplicate binder n={n}")
+                continue
+            if key:
+                seen.add(key)
             score = scores[n]
 
             sub_seq = seq.replace("/", "")[-af_model._len:]
@@ -191,7 +202,7 @@ def main():
                     val = val * 31
                 row[t] = val
             row["seq"] = seq
-            if n == 0:
+            if available_terms is None:
                 available_terms = [t for t in af_terms if t in row]
             data.append(row)
 
@@ -212,13 +223,16 @@ def main():
             line = f'>{"|".join(score_line)}\n{seq}\n'
             fasta.write(line)
 
-    # Best PDB
-    with open(f"{args.loc}/best.pdb", "w") as f:
-        f.write(f"REMARK 001 design 0 N {best['n']} RMSD {best['rmsd']:.3f}\n")
-        with open(f"{args.loc}/all_pdb/design0_n{best['n']}.pdb", "r") as r:
-            f.write(r.read())
+    if skipped:
+        run_logger.info("Skipped %d duplicate binder sequences before AlphaFold", skipped)
 
-    labels = ["design", "n", "mpnn"] + (available_terms or [t for t in af_terms if t in (data[0] if data else {})]) + ["seq"]
+    if best["n"] is not None:
+        with open(f"{args.loc}/best.pdb", "w") as f:
+            f.write(f"REMARK 001 design 0 N {best['n']} RMSD {best['rmsd']:.3f}\n")
+            with open(f"{args.loc}/all_pdb/design0_n{best['n']}.pdb", "r") as r:
+                f.write(r.read())
+
+    labels = ["design", "n", "mpnn"] + (available_terms or []) + ["seq"]
     df = pd.DataFrame(data, columns=labels)
     df.to_csv(f"{args.loc}/mpnn_results.csv", index=False)
     run_logger.info(

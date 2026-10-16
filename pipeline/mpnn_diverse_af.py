@@ -20,7 +20,7 @@ if str(_PIPELINE) not in sys.path:
 
 from common.logger import get_logger, resolve_run_id
 from mpnn_seed import load_binder_keys
-from mpnn_unique import run_unique_design
+from mpnn_unique import DEFAULT_MAX_ROUND_SIZE, run_unique_design
 
 # ColabDesign must be on path (caller sets cwd=/workspace and path)
 sys.path.insert(0, "/workspace/colabdesign")
@@ -66,6 +66,18 @@ def main():
     parser.add_argument("--seed", type=int, default=None, help="Base MPNN sampling seed; omit for historical seeds")
     parser.add_argument("--exclude_seqs_file", type=str, default=None, help="Binder sequences already stored for this backbone")
     parser.add_argument("--max_attempts", type=int, default=None, help="Stop sampling after this many attempts; default num_seqs*20")
+    parser.add_argument(
+        "--round_size",
+        type=int,
+        default=None,
+        help="Sequences per ProteinMPNN round (default: num_seqs). Changing it changes the sequences.",
+    )
+    parser.add_argument(
+        "--max_round_size",
+        type=int,
+        default=None,
+        help="Memory cap per round. Default 32; measure_mpnn_steps.py probes batch sizes up to 200.",
+    )
     args = parser.parse_args()
 
     run_id = resolve_run_id(args.run_id)
@@ -172,6 +184,8 @@ def main():
         af_terms=af_terms,
         known_keys=load_binder_keys(args.exclude_seqs_file),
         logger=run_logger,
+        round_size=args.round_size,
+        max_round_size=args.max_round_size if args.max_round_size is not None else DEFAULT_MAX_ROUND_SIZE,
     )
     run_logger.info("mpnn_diverse_af.py finished in %.2f seconds", time.time() - t0)
 

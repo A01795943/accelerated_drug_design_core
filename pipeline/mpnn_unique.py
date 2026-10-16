@@ -2,6 +2,14 @@
 
 Nothing in this module imports ColabDesign. ``mpnn_diverse_af.py`` builds the
 models and passes them in, and the tests pass fakes.
+
+One ``mk_mpnn_model`` and one ``get_af_inputs`` serve the whole run. Each
+round calls ``set_seed(diverse_mpnn_seed(base_seed, round_index))`` and
+``sample(num=1, batch=round_size)``. Sequences are reproducible for the same
+base seed and the same effective round size. Changing ``--round_size`` or
+``--max_round_size`` changes the seeds and the batch shapes, so ProteinMPNN
+draws different sequences. ``max_attempts`` is the total number of sequences
+returned by those batches, not a count of rounds.
 """
 from __future__ import annotations
 
@@ -16,6 +24,15 @@ from mpnn_seed import binder_key_for_length, diverse_mpnn_seed
 # backbone_binder_keys.binder_key is VARCHAR(64). Longer binders are stored
 # truncated, so a known key may be only the first 64 characters.
 STORED_KEY_LIMIT = 64
+
+# scripts/measure_mpnn_steps.py times sample(num=1, batch=N) for
+# N in {1, 8, 32, 64, 100, 200}. 32 is the default memory cap: it stays in
+# the lower half of that grid until a measured run raises --max_round_size.
+DEFAULT_MAX_ROUND_SIZE = 32
+
+# Draw up to twice the sequences still missing so one round can absorb a
+# reject, and never more than the configured round size.
+_PENDING_MARGIN = 2
 
 
 def matches_known_key(key: str, known: set[str]) -> bool:
@@ -50,6 +67,32 @@ def merge_run_stats(param_details: dict, output_dir: str) -> dict:
     return param_details
 
 
+def round_batch_size(
+    pending: int,
+    remaining: int,
+    round_size: int,
+    max_round_size: int,
+) -> int:
+    """Sequences to draw this round.
+
+    ``min(pending with margin, remaining attempt budget, memory cap)``, and
+    the margin itself is also capped by the configured ``round_size``.
+    """
+    if pending <= 0 or remaining <= 0 or round_size <= 0 or max_round_size <= 0:
+        return 0
+    pending_with_margin = min(round_size, pending * _PENDING_MARGIN)
+    return min(pending_with_margin, remaining, max_round_size)
+
+
+def _score_at(scores, index: int) -> float:
+    if isinstance(scores, (list, tuple)):
+        return float(scores[index])
+    shape = getattr(scores, "shape", None)
+    if shape is not None and getattr(shape, "__len__", lambda: 0)():
+        return float(scores[index])
+    return float(scores)
+
+
 def run_unique_design(
     *,
     loc: str,
@@ -63,6 +106,8 @@ def run_unique_design(
     af_terms: list[str],
     known_keys: set[str],
     logger=None,
+    round_size: int | None = None,
+    max_round_size: int = DEFAULT_MAX_ROUND_SIZE,
 ) -> dict:
     os.makedirs(loc, exist_ok=True)
     os.makedirs(f"{loc}/all_pdb", exist_ok=True)
@@ -72,33 +117,79 @@ def run_unique_design(
     attempts = 0
     skipped_db = 0
     skipped_batch = 0
+    configured_round = num_seqs if round_size is None else round_size
+    if configured_round < 1:
+        raise ValueError("round_size must be >= 1")
+    if max_round_size < 1:
+        raise ValueError("max_round_size must be >= 1")
 
     sampling_started = time.perf_counter()
     write_progress(loc, "sampling", 0, 0, num_seqs)
-    print("running proteinMPNN (one model per seed for diversity)...")
-    while len(accepted) < num_seqs and attempts < max_attempts:
-        if attempts % 25 == 0:
-            write_progress(loc, "sampling", attempts, len(accepted), num_seqs)
-        seed = diverse_mpnn_seed(base_seed, attempts)
-        attempts += 1
-        mpnn_model = mk_mpnn_model(seed=seed)
+    print("running proteinMPNN (one model, seeded rounds)...")
+    mpnn_model = None
+    if num_seqs > 0 and max_attempts > 0:
+        mpnn_model = mk_mpnn_model(seed=diverse_mpnn_seed(base_seed, 0))
         mpnn_model.get_af_inputs(af_model)
-        out = mpnn_model.sample(num=1, batch=1, temperature=temperature)
-        raw = out["seq"][0]
-        seq = raw if hasattr(raw, "strip") else str(raw)
-        score_raw = out["score"]
-        score = float(score_raw[0] if isinstance(score_raw, (list, tuple)) else score_raw)
-        key = binder_key_for_length(seq, getattr(af_model, "_len", None))
-        if matches_known_key(key, known):
-            skipped_db += 1
-            continue
-        if not key or key in seen:
-            skipped_batch += 1
-            continue
-        seen.add(key)
-        accepted.append((seq, score, key))
+    round_index = 0
+    while len(accepted) < num_seqs and attempts < max_attempts:
+        batch_size = round_batch_size(
+            num_seqs - len(accepted),
+            max_attempts - attempts,
+            configured_round,
+            max_round_size,
+        )
+        if batch_size <= 0 or mpnn_model is None:
+            break
+        seed = diverse_mpnn_seed(base_seed, round_index)
+        round_started = time.perf_counter()
+        accepted_before = len(accepted)
+        mpnn_model.set_seed(seed)
+        out = mpnn_model.sample(num=1, batch=batch_size, temperature=temperature)
+        seqs = out["seq"]
+        produced = min(batch_size, len(seqs))
+        if produced <= 0:
+            attempts += batch_size
+            break
+        attempts += produced
+        for index in range(produced):
+            if len(accepted) >= num_seqs:
+                break
+            raw = seqs[index]
+            seq = raw if hasattr(raw, "strip") else str(raw)
+            score = _score_at(out["score"], index)
+            key = binder_key_for_length(seq, getattr(af_model, "_len", None))
+            if matches_known_key(key, known):
+                skipped_db += 1
+                continue
+            if not key or key in seen:
+                skipped_batch += 1
+                continue
+            seen.add(key)
+            accepted.append((seq, score, key))
+        write_progress(loc, "sampling", attempts, len(accepted), num_seqs)
+        accepted_round = len(accepted) - accepted_before
+        if logger is not None:
+            logger.info(
+                "round=%d sampled=%d accepted=%d skipped_db=%d skipped_batch=%d "
+                "round_accept_rate=%.3f round_seconds=%.3f",
+                round_index,
+                attempts,
+                len(accepted),
+                skipped_db,
+                skipped_batch,
+                (accepted_round / produced) if produced else 0.0,
+                time.perf_counter() - round_started,
+            )
+        round_index += 1
     sec_sampling = time.perf_counter() - sampling_started
     write_progress(loc, "sampling", attempts, len(accepted), num_seqs)
+    if len(accepted) < num_seqs and logger is not None:
+        logger.warning(
+            "sampling hit max_attempts=%d with accepted=%d missing=%d",
+            max_attempts,
+            len(accepted),
+            num_seqs - len(accepted),
+        )
 
     af_started = time.perf_counter()
     write_progress(loc, "alphafold", attempts, len(accepted), num_seqs)
